@@ -3,7 +3,7 @@ from Bio.Seq import Seq
 from Bio import SeqIO
 
 
-hit_dict = {'index' : 0, 'hmm_cord' : [], 'hit_cord' : [], 'env_cord' : [], 'frame_num' : 0, 'c-evalue' : 0.0, 'i-evalue' : 0.0, 'reverse' : False, 'ali_score' : ''}
+hit_dict = {'index' : 0, 'hmm_pos' : [], 'genome_pos' : [], 'env_pos' : [], 'frame_num' : 0, 'c-evalue' : 0.0, 'i-evalue' : 0.0, 'reverse' : False, 'ali_score' : ''}
 
 # Build HMM Protein Profile from multiple sequence alignment
 # Return subprocess object of hmmbuild
@@ -22,7 +22,7 @@ def get_reading_frames(sequence):
 # Search for matches of HMM Protein Profile on a sequence database
 # Return subprocess object of hmmsearch
 def hmmsearch(hmm_file, seqeunce_database):
-    return subprocess.run(['hmmsearch', '--max', hmm_file, seqeunce_database],
+    return subprocess.run(['hmmsearch', '--nobias', hmm_file, seqeunce_database],
                           universal_newlines=True, capture_output=True)
 
 # Read hmmsearch output and extracts all the hits
@@ -37,38 +37,41 @@ def read_hmmsearch(hmmsearch_output):
     for index, line in enumerate(lines):
         # Finding coordinates of hits in each sequence
         if line.startswith('>>'):
-            hit = copy.deepcopy(hit_dict)
             if re.sub(' +', ' ', line).strip().split(' ')[1].startswith('r'):
-                hit['reverse'] = True
-                hit['frame_num'] = int(re.sub(' +', ' ', line).strip().split(' ')[1][1])
+                reverse = True
+                frame_num  = int(re.sub(' +', ' ', line).strip().split(' ')[1][1])
             else:
-                hit['reverse'] = False
-                hit['frame_num'] = int(re.sub(' +', ' ', line).strip().split(' ')[1][0])
+                reverse = False
+                frame_num = int(re.sub(' +', ' ', line).strip().split(' ')[1][0])
             hit_line_num = index + 3
             # Reading the starting and the ending indices of each hmms, and hits
             while lines[hit_line_num].strip():
+                hit = copy.deepcopy(hit_dict)
+                hit['reverse'] = reverse
+                hit['frame_num'] = frame_num
+
                 clean_line = re.sub(' +', ' ', lines[hit_line_num]).strip()
                 hit['index'] = hit_index
                 hit['c-evalue'] = float(clean_line.split(' ')[4])
                 hit['i-evalue'] = float(clean_line.split(' ')[5])
-                hit['hmm_cord'] = [int(i) for i in clean_line.split(' ')[6:8]]
-                # hit['hmm_cord'][0] += -1
-                # temp = copy.deepcopy(hit['hmm_cord'])
+                hit['hmm_pos'] = [int(i) for i in clean_line.split(' ')[6:8]]
+                # hit['hmm_pos'][0] += -1
+                # temp = copy.deepcopy(hit['hmm_pos'])
                 # if reverse:
-                #     hit['hmm_cord'][0] = hmm_len - temp[1]
-                #     hit['hmm_cord'][1] = hmm_len - temp[0]
-                hit['hit_cord'] = [int(i) for i in clean_line.split(' ')[9:11]]
-                # hit['hit_cord'][0] += -1
-                # temp = copy.deepcopy(hit['hit_cord'])
+                #     hit['hmm_pos'][0] = hmm_len - temp[1]
+                #     hit['hmm_pos'][1] = hmm_len - temp[0]
+                hit['genome_pos'] = [int(i) for i in clean_line.split(' ')[9:11]]
+                # hit['genome_pos'][0] += -1
+                # temp = copy.deepcopy(hit['genome_pos'])
                 # if reverse:
-                #     hit['hit_cord'][0] = len(genome['seq'])//3 - temp[1]
-                #     hit['hit_cord'][1] = len(genome['seq'])//3 - temp[0]
-                hit['env_cord'] = [int(i) for i in clean_line.split(' ')[12:14]]
-                # hit['env_cord'][0] += -1
-                # temp = copy.deepcopy(hit['env_cord'])
+                #     hit['genome_pos'][0] = len(genome['seq'])//3 - temp[1]
+                #     hit['genome_pos'][1] = len(genome['seq'])//3 - temp[0]
+                hit['env_pos'] = [int(i) for i in clean_line.split(' ')[12:14]]
+                # hit['env_pos'][0] += -1
+                # temp = copy.deepcopy(hit['env_pos'])
                 # if reverse:
-                #     hit['env_cord'][0] = len(genome['seq'])//3 - temp[1]
-                #     hit['env_cord'][1] = len(genome['seq'])//3 - temp[0]
+                #     hit['env_pos'][0] = len(genome['seq'])//3 - temp[1]
+                #     hit['env_pos'][1] = len(genome['seq'])//3 - temp[0]
                 hits.append(hit)
                 hit_line_num += 1
                 hit_index += 1
@@ -104,14 +107,14 @@ def sequence_to_fasta(sequence, title = "NO_HEADER", line_length = 60):
 
     return fasta
 
-def build_and_search(msa_file, fasta_file, organism_name):
+def build_and_search(msa_file, fasta_file, organism_name, protein_name):
     # Running hmmbuild to build HMM Protein Profile from MSA
-    process = msa_to_hmm(msa_file, organism_name+'.hmm')
+    process = msa_to_hmm(msa_file, protein_name+'.hmm')
     if process.returncode:
         print('hmmbuild has failed:\n', process.stderr)
-        exit()
+        exit(1)
     else:
-        hmm_file = organism_name+'.hmm'
+        hmm_file = protein_name+'.hmm'
 
     # Making six translated reading frames and saving it as a FASTA sequence database
     fasta = next(SeqIO.parse(fasta_file, 'fasta'))
@@ -119,7 +122,7 @@ def build_and_search(msa_file, fasta_file, organism_name):
     translated_reading_frames = [Seq(rf).translate() for rf in reading_frames]
     sequence_database = []
     for index, rf in enumerate(translated_reading_frames):
-        if index//3:
+        if not index//3:
             sequence_database.append([str((index%3)+1) + '_rf_' + organism_name, str(rf)])
         else:
             sequence_database.append(['r' + str((index%3)+1) + '_rf_' + organism_name, str(rf)])
@@ -130,7 +133,7 @@ def build_and_search(msa_file, fasta_file, organism_name):
     process = hmmsearch(hmm_file, '.translated_'+organism_name+'.fasta')
     if process.returncode:
         print('hmmsearch has failed:\n', process.stderr)
-        exit()
+        exit(1)
     else:
         hmmsearch_output = process.stdout
     
