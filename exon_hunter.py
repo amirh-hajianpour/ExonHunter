@@ -14,25 +14,9 @@ from scipy.stats import entropy
 from sklearn.model_selection import StratifiedKFold
 from sklearn.cluster import KMeans
 
-from build_and_search import build_and_search
+from build_and_search import *
 
 
-debug_mode = False
-
-# The query gene
-query_gene = {}
-# seq: nucleotide seq of target genome, title: comment/title of the genome (>)
-genome = {'seq' : '', 'title' : ''}
-# ant: full annotation string, seq: nucleotide seq of the annotation, species: name of species, genes: set of the including (coding) genes
-annotation = {'text' : '', 'seq' : '', 'species' : '', 'genes' : []}
-# seq: nucleotide seq, name: name, type: type of a gene (gene, trna, rns), start: starting index, ending index, (start, end) list of exons, (start, end) list of introns
-gene = {'seq' : '', 'name' : '', 'type' : '', 'start' : 0, 'end' : 0, 'exons' : [], 'introns' : [], 'reverse' : False}
-
-# List of hits that HMMER outputs, each hit is represented as a dictionary
-hits = []
-# Each hit is represented as a dictionary
-# index: position in hmmer report
-hit = {'index' : 0, 'hmm_cord' : [], 'hit_cord' : [], 'env_cord' : [], 'frame_num' : 0, 'is_exon' : [], 'optimal' : False, 'c-evalue' : 0.0, 'i-evalue' : 0.0, 'reverse' : False, 'f_ev' : False, 'f_cub' : False, 'ali_score' : ''}
 
 threshold = 0.012
 coefficients = {'alpha' : 0.6, 'beta' : 0.8, 'theta' : 0, 'gamma' : 0}
@@ -45,9 +29,7 @@ hits_codon_frequencies = []
 trim = {'exon_t' : 0, 'gene_t' : 0, 'genome_t' : 0}
 
 output = {'Species' : '', 'Gene' : '', 'TP' : 0, 'FP' : 0, 'TN' : 0, 'FN' : 0, 'Exons' : 0, 'Hits' : 0, 'Found_Exons' : 0, 'HMM_Len' : 0, 'Exom_Len' : 0, 'Overlap' : 0, 'Hits_Len' : 0, 'Hits_Rank' : ''}
-print = {'status' : False, 'read' : False, 'hmmer' : True, 'hits' : True, 'hits_vis' : True, 'ant_info' : True, 'cdn_freq' : True}
 
-window_width = os.get_terminal_size()[0]
 
 # Correspond a position in nucleic acid coordinates (DNA) to amino acid coordinates (translated DNA)
 # Returns an amino acid position
@@ -61,6 +43,7 @@ def nucleic_to_amino(na_pos, frame_number):
 
     return (na_pos - frame_number) // 3 + 1
 
+
 # Correspond a position in amino acid coordinates (translated DNA) to nucleic acid coordinates (DNA)
 # Returns a nucleic acid position
 def amino_to_nucleic(aa_pos, frame_number):
@@ -73,61 +56,65 @@ def amino_to_nucleic(aa_pos, frame_number):
 
     return start
 
+
 # TODO: Can be improved
 # Computes a score for a set of hmms considering:
-# (1) overlap as penalty, (2) match (coverage) as positive score
+# (1) overlap as penalty, (2) coverage as score
 # Rejects sets of hmms that have crossings
-def score(hmms_set):
-    hmms = list(map(list, hmms_set))
+def score(bag_of_hits, coefficients={'alpha':0.6,'beta':0.4,'theta':0.8}):
+    hmm_intervals = [hit['hmm_pos'] for hit in bag_of_hits]
 
     # If the set only contains one hit
-    if len(hmms) == 1:
-        return hmms[0][1] - hmms[0][0] + 1
+    if len(hmm_intervals) == 1:
+        return hmm_intervals[0][1] - hmm_intervals[0][0] + 1
 
     # Checking for crossing (invalid order of) hits
-    hmms = sorted(hmms, key=lambda tup: tup[0])
-    hmm_indices = []
-
-    for hmm in hmms:
-        hmm_indices.append([i['hmm_cord'] for i in hits].index(hmm))
-
-    hits = [[i['hit_cord'] for i in hits][i] for i in hmm_indices]
-    if hits != sorted(hits, key=lambda tup: tup[0]):
+    if sorted(bag_of_hits, key=lambda dict: dict['hmm_pos']) \
+        != sorted(bag_of_hits, key=lambda dict: dict['genome_pos']):
+        #print('crossing')
         return -sys.maxsize
 
     # Looping through all pairs of hits to calculate the overall overlap
     overlap = 0
-    for i in range(len(hmms)):
-        for j in range(i + 1, len(hmms)):
-            if max(hmms[i][0], hmms[j][0]) < min(hmms[i][1], hmms[j][1]):
-                overlap += min(hmms[i][1], hmms[j][1]) - max(hmms[i][0], hmms[j][0]) + 1
+    for i in range(len(hmm_intervals)):
+        for j in range(i+1, len(hmm_intervals)):
+                overlap += get_overlap(*hmm_intervals[i], *hmm_intervals[j])
 
     # Calculating the coverage (ovrelap is being added 2 times)
     coverage = 0
-    for i in range(len(hmms)):
-        coverage += hmms[i][1] - hmms[i][0] + 1
+    for interval in hmm_intervals:
+        coverage += interval[1] - interval[0] + 1
+    coverage = coverage - overlap
 
-    # coefficients = 0
-    score = coefficients['alpha'] * coverage - (1-coefficients['alpha']) * (2*overlap)
-    for i in hmm_indices:
-        hit = hits[i]
-        score += coefficients['beta'] * -math.log(hit['i-evalue'], 10)
+    # Taking the e-values of each hit into account
+    evalue_score = 0
+    for hit in bag_of_hits:
+        evalue_score += -math.log(hit['i-evalue'], 10)
+
+    score = coefficients['alpha'] * coverage \
+            - coefficients['beta'] * overlap \
+            - coefficients['theta'] * evalue_score
+
+    #print(coverage, overlap, evalue_score, sep=' , ')
     return score
 
-# Goes through all possible sets of hits: 2^hits
-def binary_search_tree(hits, bag_of_hits, n):
+
+# Make all possible sets of hits: 2^hits
+def binary_search_tree(hits, bag_of_hits):
     # Base Case
-    if n == 0:
-        return score(bag_of_hits), bag_of_hits
+    if not len(hits):
+        bag_score = score(bag_of_hits)
+        #print(*[str(i['index']) for i in bag_of_hits], x, sep = '\t')
+        return bag_score, bag_of_hits
 
     # Keeping the bag unchanged
-    old_bag_of_hits = bag_of_hits.copy()
+    old_bag_of_hits = bag_of_hits
     # Adding the last element of the hits list to the bag
-    bag_of_hits.add(hits[n - 1])
+    new_bag_of_hits = bag_of_hits + [hits[-1]]
     # Calculating the score of the bag if n-1th hit was added
-    left_score, left_set = binary_search_tree(hits, bag_of_hits, n - 1)
+    left_score, left_set = binary_search_tree(hits[:-1], new_bag_of_hits)
     # Calculating the score of the bag if n-1th hit was not added
-    right_score, right_set = binary_search_tree(hits, old_bag_of_hits, n - 1)
+    right_score, right_set = binary_search_tree(hits[:-1], old_bag_of_hits)
 
     # Keeping the item if it led to a better score
     if left_score >= right_score:
@@ -136,70 +123,31 @@ def binary_search_tree(hits, bag_of_hits, n):
     else:
         return right_score, right_set
 
-# TODO: This method can be more efficient.
-# Find starting or ending index of a region in MF Annotation
-def find_junction(sequence, line_index):
-    residue = 0
-    if sequence == [''] or line_index + 100 > len(annotation['text']):
-        annotation = annotation['text']
-        while True:
-            line = re.sub(' +', ' ', re.sub('!', '', annotation[line_index]).strip()).split(' ')
-            if not line[0].isnumeric():
-                if not line[0] in [';', ';;']:
-                    residue += len(''.join(line))
-            else:
-                residue += len(''.join(line[1:]))
-                break
-            line_index -= 1
-        return int(line[0]) + residue
-    i = 0
-    line = re.sub(' +', ' ', re.sub('!', '', sequence[i]).strip()).split(' ')
-    while not line[0].isnumeric():
-        if not line[0] in [';', ';;']:
-            residue += len(''.join(line))
-        i += 1
-        line = re.sub(' +', ' ', re.sub('!', '', sequence[i]).strip()).split(' ')
-    return int(line[0]) - residue
 
 # TODO: Maybe remove the hit reference to make this method to be a general overlap finder method
 # Checks if an exon is found in the search by looking for intersection
 # Returns the indices of the corresponding hit(s)
 def is_exon():
-    query_gene = copy.deepcopy(gene)
     for gene in annotation['genes']:
         if gene['name'] == query_gene['name']:
             query_gene = gene
             break
     for hit in hits:
         for i, exon in enumerate(query_gene['exons']):
-            if overlap(*exon, amino_to_nucleic(hit['hit_cord'][0], hit['frame_num']), \
-                amino_to_nucleic(hit['hit_cord'][1], hit['frame_num'])) > 0:
+            if get_overlap(*exon, amino_to_nucleic(hit['genome_pos'][0], hit['frame_num']), \
+                amino_to_nucleic(hit['genome_pos'][1], hit['frame_num'])) > 0:
                 hit['is_exon'].append(i+1)
 
-# Returns the overlap of two ranges
-def overlap(start_1, end_1, start_2, end_2):
+
+# Return the overlap of two ranges
+def get_overlap(start_1, end_1, start_2, end_2):
     if start_1 > end_1 or start_2 > end_2:
         raise ValueError(0, 'Invalid coordinates!')
     if min(end_1, end_2) >= max(start_1, start_2):
-        return min(end_1, end_2) - max(start_1, start_2)
+        return min(end_1, end_2) - max(start_1, start_2) + 1
     else:
         return 0
 
-
-# TODO: This can be improved. Go next line only if overlap with prev hit.
-def hits_vis(hmms):
-    offset = 0
-    hit = ''
-    for i in range(len(hmms)):
-        hit = (hmms[i][1] - hmms[i][0] + 1)%window_width
-        offset = hmms[i][0]%window_width
-        if i and hmms[i][0] < hmms[i-1][1]:
-            print()
-        elif i:
-            offset = (hmms[i][0] - hmms[i-1][1])%window_width
-        print(' '*(offset-len(str(hmms[i-1][1]))), '' if hmms[i][0] == hmms[i-1][1] else hmms[i][0] \
-            , '-'*(hit - len(str(hmms[i][1])) - len(str(hmms[i][0]))), hmms[i][1], sep='', end='')
-    print()
 
 def cluster(codon_freqs_and_info):
     print("\nK-means Clustering Result:\n", '-'*len("K-means Clusterin Result:\n"), sep='')
@@ -248,61 +196,6 @@ def cluster(codon_freqs_and_info):
             print_args += 1
         print(print_format.format(i, *print_data))
 
-# Represents a list in a nice format
-def list_rep(list):
-    col = 5
-    cur_line = 0
-    print()
-    for idx, item in enumerate(list):
-        print('{:>5}:  {},     '.format(idx+1, item), end='')
-        if idx//(col-1) > cur_line:
-            print()
-            cur_line += 1
-    print()
-
-def wise_reader(wise_output):
-    wise = wise_output.split('\n')
-    start = False
-    end = False
-    cords = []
-    for line in wise[::-1]:
-        if not end and line == '//':
-            end = True
-        elif end and line == '//':
-            start = True
-            break
-        elif end and not start:
-            items = line.split('\t')
-            if items[2] == 'cds':
-                cords.append([int(items[3]), int(items[4])])
-    hits_len = 0
-    for cord in cords:
-        hits_len += cord[1] - cord[0] - 2
-
-    query_gene = copy.deepcopy(gene)
-    for gene in annotation['genes']:
-        if gene['name'] == query_gene['name']:
-            query_gene = gene
-            break
-    exome_len = 0
-    for exon in query_gene['exons']:
-        exome_len += exon[1] - exon[0]
-
-    indices = set()
-    total_overlap = 0
-    for index1, i in enumerate(cords):
-        for index2, j in enumerate(query_gene['exons']):
-            overlap = overlap(*i, *j)
-            print(*i, *j, index1, index2)
-            print(overlap)
-            if overlap > 0:
-                print(overlap)
-                indices = indices.union(str(index2))
-            else:
-                overlap = 0
-            total_overlap += overlap
-    return len(indices)/len(query_gene['exons']), exome_len, total_overlap, hits_len
-
 
 # Finds the e-value threshold using stratified k-fold cross validation
 # It takes a list of e-value and outcome of hits (list of list)
@@ -335,9 +228,9 @@ def obj_func_grid_search(coefs = {'alpha' : [0.6], 'beta' : [0.8], 'theta' : [0]
                     print('settings: ', coefficients)
                     # Computing the best hits set and flagging the hits
                     hits = [hit for hit in hits if hit['i-evalue'] <= threshold]
-                    score, opt_hmms = binary_search_tree(list(map(tuple, [i['hmm_cord'] for i in hits])), set(), len(hits))
+                    score, opt_hmms = binary_search_tree(list(map(tuple, [i['hmm_pos'] for i in hits])), set(), len(hits))
                     for hit in hits:
-                        if hit['hmm_cord'] in [list(cord) for cord in opt_hmms]:
+                        if hit['hmm_pos'] in [list(cord) for cord in opt_hmms]:
                             hit['optimal'] = True
 
                     annot_info('i')
@@ -362,14 +255,12 @@ def header():
         print(' '*(int((window_width-len(title))/2)), title)
         print('-'*window_width)
 
-
-
 # Computing the best hits set and flagging the hits
 def best_hit_set():
     hits = [hit for hit in hits if hit['i-evalue'] <= threshold]
-    score, opt_hmms = binary_search_tree(list(map(tuple, [hit['hmm_cord'] for hit in hits])), set(), len(hits))
+    score, opt_hmms = binary_search_tree(list(map(tuple, [hit['hmm_pos'] for hit in hits])), set(), len(hits))
     for hit in hits:
-        if hit['hmm_cord'] in [list(cord) for cord in opt_hmms]:
+        if hit['hmm_pos'] in [list(cord) for cord in opt_hmms]:
             hit['optimal'] = True
 
 # TODO: Under construction!
@@ -670,7 +561,17 @@ def run(fasta, hmm_profile, annotation, query_gene, format):
     # CUB of Organisms, Genes throughout their sequences (heatmap)
     # Clustering hits according to their CU distances
 
+def main():
+    hits = build_and_search('cob.aln', 'Endoconidiophora_resinifera.fasta', 'Endoconidiophora_resinifera', 'cob')
+
+    hunt_score, hit_set = binary_search_tree(hits, [])
+    print(hunt_score)
+    print(sorted(hit_set, key=lambda dict: dict['hmm_pos']))
+
+
 if __name__ == '__main__':
+    main()
+    exit()
     if sys.argv[1] == '-h':
         print("python3 Exon_Hunter.py dna_sequence = 'genome.fasta' hmm_profile = 'protein_profile.hmm', annotation = 'annotation.mf', gene = 'gene_name', output_format = '[i/t]'")
     elif len(sys.argv) == 2:
