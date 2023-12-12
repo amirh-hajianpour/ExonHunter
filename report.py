@@ -187,3 +187,18 @@ def splice_site_location():
         if best_hit:
             locations.append(best_hit)
     return locations
+
+# TODO: This can be improved. Go next line only if overlap with prev hit.
+def hits_vis(hmms):
+    offset = 0
+    hit = ''
+    for i in range(len(hmms)):
+        hit = (hmms[i][1] - hmms[i][0] + 1)%window_width
+        offset = hmms[i][0]%window_width
+        if i and hmms[i][0] < hmms[i-1][1]:
+            print()
+        elif i:
+            offset = (hmms[i][0] - hmms[i-1][1])%window_width
+        print(' '*(offset-len(str(hmms[i-1][1]))), '' if hmms[i][0] == hmms[i-1][1] else hmms[i][0] \
+            , '-'*(hit - len(str(hmms[i][1])) - len(str(hmms[i][0]))), hmms[i][1], sep='', end='')
+    print()
