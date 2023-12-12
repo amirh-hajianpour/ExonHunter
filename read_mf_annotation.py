@@ -1,7 +1,11 @@
-import re
+import copy, re
 
 
-def annotation_to_fasta(annotation, fasta_line_length = 60):
+# seq: nucleotide seq, name: name, type: type of a gene (gene, trna, rns), start: starting index, ending index, (start, end) list of exons, (start, end) list of introns
+gene_dict = {'seq' : '', 'name' : '', 'type' : '', 'start' : 0, 'end' : 0, 'exons' : [], 'introns' : [], 'reverse' : False}
+
+
+def convert_mf_to_fasta(annotation, fasta_line_length = 60):
     annotation_lines = annotation.splitlines()
     # Get header/description line of annotation
     for line_number, line in enumerate(annotation_lines):
@@ -9,140 +13,115 @@ def annotation_to_fasta(annotation, fasta_line_length = 60):
             if line.strip().startswith('>'):
                 header = line.strip() + '\n'
                 annotation_lines = annotation_lines[line_number:]
+                break
             else:
-                print('Error: Annotation does not start with a desciption line.')
-                return
+                raise ValueError('Annotation does not start with a desciption line.')
 
     # Get sequences of fasta
     fasta = ''
     residue = ''
     for line in annotation_lines:
-        stripped_line = line.strip()
-        if stripped_line:
-            if not stripped_line.startswith(';'):
-                splits = stripped_line.split('\t')
-                if splits[0].isnumeric():
-                    residue += ''.join(splits[1:])
-                else:
-                    residue += ''.join(splits)
-                residue = re.sub(' +', '', residue)
-                if len(residue) >= fasta_line_length:
-                    fasta += residue[:fasta_line_length] + '\n'
-                    residue = residue[fasta_line_length:]
+        if not line.startswith(';') and not line.startswith('>') and line.strip():
+            splits = re.sub(' +', ' ', line.strip().replace('!', '')).split(' ')
+            if splits[0].isnumeric():
+                residue += ''.join(splits[1:])
+            else:
+                residue += ''.join(splits)
+            if len(residue) >= fasta_line_length:
+                fasta += residue[:fasta_line_length] + '\n'
+                residue = residue[fasta_line_length:]
 
     if len(residue) != 0:
         fasta += residue + '\n'
     
-    for char in fasta:
-        if char not in list('AGCTNagctn!'+'\n'):
-            print('Character', char, 'is not a valid character for MasterFile Annotation Format.')
-            return
+    for line_number, line in enumerate(fasta.splitlines()):
+        if not line.startswith('>'):
+            for char in line:
+                if char not in list('AGCTNagctn'):
+                    raise ValueError('Character "', char, '" in line #' + str(line_number) + ' is not a valid character for MasterFile Annotation Format.')
 
-    return fasta.upper()
+    return header + fasta.upper()
 
-def validate_mf(annot_file):
-    annot_string = open(annot_file, 'r')
-    seq = annot_string.read()
-    #sequence = re.sub(r'^;.*|!|^>.*|^$', '', seq)
-    last_idx = 0
-    for index, line in enumerate(seq.split('\n')):
-        line = re.sub(' +', ' ', line.strip()).split(' ')
-        if len(line) != 2:
-            print(index, line)
-            raise ValueError('Invalid line.')
-        if last_idx != 0 and int(line[0]) != int(last_idx) + len(last_line):
-            print(index, int(line[0]), int(last_idx) + len(last_line))
-        last_idx = line[0]
-        last_line = line[1]
-    le = 1
-    for m in re.findall(r'^\s*(\d+)\s*(.+)$', seq, re.MULTILINE):
-        if le != int(m[0]):
-            print(m, le)
-            le = int(m[0])
-        # le += len([e for e in m[1] if e != '!'])
-        le += len(m[1])
-
-# Checks if all indices of the annotation match with sequence length.
-def ant_index_valid():
-    annotation = annotation['text']
-    new_index = 1
-    for line in annotation:
-        line = re.sub(' +', ' ', re.sub('!', '', line.strip())).split(' ')
-        if not line[0].startswith('>') and not line[0].startswith(';') and line != ['']:
-            if line[0].isnumeric():
-                if new_index != int(line[0]):
-                    raise ValueError('Annotation: Indices do not match sequence lengths. \nIndex: ' + line[0] + ', sequence: ' + ' '.join([str(i) for i in line[1:]]))
-                new_index += len(''.join(line[1:]))
+def correct_mf_format(annotation):
+    annotation_lines = annotation.splitlines()
+    correct_annotation = ''
+    valid = True
+    offset = 0
+    last_idx = 1
+    last_seq = ''
+    padding = 0
+    for index, line in enumerate(annotation_lines):
+        if not line.startswith(';') and not line.startswith('>') and line.strip():
+            splits = re.sub(' +', ' ', line.strip().replace('!', '')).split(' ')
+            if splits[0].isnumeric():
+                if len(splits) > 1:
+                    if int(splits[0]) != (int(last_idx) + len(last_seq)):
+                        valid = False
+                        print('WARNING: Line "', line, '" in line #', index, ' has invalid index.')
+                        print('index should be ', int(last_idx) + len(last_seq), 'instead of ', int(splits[0]))
+                        offset += int(last_idx) + len(last_seq) - int(splits[0])
+                        last_idx = splits[0]
+                    else:
+                        last_idx = splits[0]
+                    last_seq = ''.join(splits[1:])
+                else:
+                    last_idx = splits[0]
+                    last_seq = ''
             else:
-                new_index += len(''.join(line))
+                last_idx = str(int(last_idx) + len(last_seq))
+                last_seq = ''.join(splits)
+            padding = 6 - len(last_idx)
+            correct_annotation += (' '*padding) + str(int(last_idx) + offset) \
+                                + '  ' + ''.join(last_seq).upper() + '\n'
+        elif line.strip():
+            correct_annotation += line + '\n'
+    return valid, correct_annotation
 
-# Checks if the sequence of FASTA File matches with the annotation's
-def ant_seq_valid():
-    dna = genome['seq'].upper()
-    annotation = annotation['seq'].upper()
-    if dna != annotation:
-        length = max(len(dna), len(annotation))
-        i = int(length / 2)
-        while i > 100:
-            # Left
-            if dna[:i] != annotation[:i]:
-                dna = dna[:i]
-                annotation = annotation[:i]
-            # Right
-            elif dna[i:] != annotation[i:]:
-                dna = dna[i:]
-                annotation = annotation[i:]
-            i = int(i / 2)
-        print('Index: ' , i, '\nDNA:        ', dna, '\nAnnotation: ', annotation)
-        raise ValueError(0, 'FASTA File does not match with annotation')
+# Reads MasterFile annotation and gets genes
+def read_mf(annotation):
+    valid, annotation = correct_mf_format(annotation)
 
-# Reads MasterFile annotation
-# Stores genes, exon and intron boundaries in annotation['genes']
-def read_annotation(annotation):
-    print("Reading the annotation file ...") if not debug_mode and print['status'] else print('', end='')
-    annotation['text'] = open(annotation, 'r').read().split('\n')
-
-    ant_index_valid()
-    annotation = annotation['text']
-
+    annotation_lines = annotation.splitlines()
     # Reading species name from fasta title ('>')
-    for line in annotation:
+    header = ''
+    for line in annotation_lines:
         if line.startswith('>'):
-            line = re.sub(' +', ' ', line.strip()).split(' ')
-            annotation['species'] = ' '.join(line)[1:]
-            break
-    if not annotation['species']:
-        raise ValueError(0, 'Could not find the title of the annotation file.')
-    index = 0 # index of the current line of the annotation
+            header = line
+    if not header:
+        raise ValueError('FASTA description line was not found.')
+
+    index = 0
     last_index = 0 # index of the last visited line. Reading sequence index should not be changed because of stacking.
-    popped = False # if a stack is popped and last_index should not be changed.
+    popped = False # if a stack is popped, last_index should not be changed.
     inner_gene = [] # stack of starting index of genes that start within another gene
-    gene = copy.deepcopy(gene) # a copy of gene dictionary
-    is_gene = False # if it's a gene region
-    region = '' # name of the region
-    visited_genes = []
+    gene = copy.deepcopy(gene_dict) # a copy of gene dictionary
+    genes = [] # set of all genes
+    region = 'intergenic' # name of the region
     start = end = 0 # start and end of a region
-    # Parsing Annotation
-    while index < len(annotation):
+
+    while index < len(annotation_lines):
         if last_index > index:
             popped = True
         elif last_index < index:
-            popped = False
             last_index = index
-        line = annotation[index]
-        if line:
-            line = re.sub(' +', ' ', line.strip()).split(' ')
-            # sequence feature line
-            if line[0] == ';':# gene starts
-                if not re.findall('^G-.*-', line[1]) and not re.sub('G-', '', line[1]).startswith('orf') and (line[2] == '==>' or line[2] == '<==') and (line[3].startswith('start') or line[3].startswith('end')) and not re.sub('G-', '', line[1]) in visited_genes:
-                    if not is_gene:
+        line = annotation_lines[index]
+        if line.strip():
+            splits = re.sub(' +', ' ', line.strip()).split(' ')
+            # start of a gene
+            if line.strip().startswith(';') and len(splits) >= 4:
+                #(splits[2] == '==>' or splits[2] == '<==') and
+                if splits[0] == ';' and re.match('G-.*', splits[1]) and \
+                        not re.match('G-(orf|Var|Mot)', splits[1]) and \
+                        not re.match('G-.*-(E|I)', splits[1]) and \
+                        splits[2] == '==>' and \
+                        splits[3].startswith('start'):
+                        #(splits[3].startswith('start') or splits[3].startswith('end')):
+                    if region == 'intergenic':
                         region = 'gene'
-                        is_gene = True
-                        visited_genes.append(re.sub('G-', '', line[1]))
-                        gene = copy.deepcopy(gene)
-                        gene['name'] = re.sub('G-', '', line[1])
-                        gene['reverse'] = True if line[2] == '<==' else False
-                        gene['start'] = find_junction(annotation[index:], index)
+                        gene = copy.deepcopy(gene_dict)
+                        gene['name'] = splits[1].replace('G-', '')
+                        gene['reverse'] = True if splits[2] == '<==' else False
+                        gene['start'] = find_junction(annotation_lines, index, 'start')
                         if gene['name'].startswith('rns'):
                             gene['type'] = 'rns'
                         elif gene['name'].startswith('trn'):
@@ -154,63 +133,81 @@ def read_annotation(annotation):
                         else:
                             gene['type'] = 'gene'
                     else:
-                        # print('stacked: ', index)
-                        inner_gene.append(index)
-                # gene ends
-                elif re.findall(('^G-' + re.escape(gene['name']) + '$'), line[1]) and (line[3].startswith('start') or line[3].startswith('end')) and re.sub('G-', '', line[1]) in visited_genes and region == 'gene':
-                    # print('e: ', line)
-                    if is_gene:
-                        gene['end'] = find_junction(annotation[index:], index)
+                        inner_gene_name = splits[1].replace('G-', '')
+                        if gene['name'] != inner_gene_name:
+                            inner_gene.append(index)
+                        else:
+                            print('WARNING: It seems gene "' + gene['name'] + '" has unresolved start position.')
+                # end of a gene
+                elif splits[0] == ';' and re.match('G-.*', splits[1]) and \
+                        not re.match('G-(orf|Var|Mot)', splits[1]) and \
+                        not re.match('G-.*-(E|I)', splits[1]) and \
+                        splits[2] == '==>' and \
+                        splits[3].startswith('end'):
+                    #(splits[3].startswith('start') or splits[3].startswith('end')) and \
+                    if gene['name'] and re.match('^G-' + re.escape(gene['name']) + '$', splits[1]) and region == 'gene':
+                        gene['end'] = find_junction(annotation_lines, index, 'end')
                         if not gene['exons']:
                             gene['exons'] = [[gene['start'], gene['end']]]
-                        annotation['genes'].append(gene)
-                        is_gene = False
-                    if inner_gene:
-                        index = inner_gene.pop() - 1
-                    region = ''
-                elif re.findall(('^G-' + re.escape(gene['name']) + '-[Ee]\d*$'), line[1]):
-                    # exon starts
+                        genes.append(gene)
+                        region = 'intergenic'
+                        popped = False
+                        if inner_gene:
+                            index = inner_gene.pop()
+                            continue
+                    elif not popped:
+                        # TODO
+                        # a variable to store the number of starts and ends for each reached gene name. If bigger than 1, then 
+                        # that gene has more than 1 starts or ends.
+                        print('WARNING: It seems gene "' + splits[1].replace('G-', '') + '" has unresolved ending position.')
+
+                elif re.match(('^G-' + re.escape(gene['name']) + '-[Ee]\d*$'), splits[1]):
+                    # start of an exon
                     if region != 'exon':
-                        start = find_junction(annotation[index:], index)
+                        start = find_junction(annotation_lines, index, 'start')
                         region = 'exon'
-                    # exon ends
+                    # end of an exon
                     elif region == 'exon':
-                        end = find_junction(annotation[index:], index)
+                        end = find_junction(annotation_lines, index, 'end')
                         gene['exons'].append([start, end])
                         start = end = 0
                         region = 'gene'
-                elif re.findall(('^G-' + re.escape(gene['name']) + '-[Ii]\d*$'), line[1]):
-                    # intron starts
+                elif re.match(('^G-' + re.escape(gene['name']) + '-[Ii]\d*$'), splits[1]):
+                    # start of an intron
                     if region != 'intron':
-                        start = find_junction(annotation[index:], index)
+                        start = find_junction(annotation_lines, index, 'start')
                         region = 'intron'
-                    # intron ends
+                    # end of an intron
                     elif region == 'intron':
-                        end = find_junction(annotation[index:], index)
-                        gene['introns'].append([start, end])
-                        start = end = 0
-                        region = 'gene'
-            elif not popped and line[0] != ';;' and not line[0].startswith('>'):
-                if line[0].isnumeric():
-                    annotation['seq'] += ''.join(line[1:])
-                else:
-                    annotation['seq'] += ''.join(line)
+                        if splits[3].startswith('end'):
+                            end = find_junction(annotation_lines, index, 'end')
+                            gene['introns'].append([start, end])
+                            start = end = 0
+                            region = 'gene'
+                        elif splits[3].startswith('start'):
+                            # TODO
+                            # TWINTRONS
+                            pass
         index += 1
 
-    # Handling fragmented genes
+    # concatenating fragments of fragmented genes
     frag_gene_names = [] # List of the names of the fragmented genes
-    for gene in [item for item in annotation['genes'] if item['type'] == 'gene']:
-        if re.findall('_\d$', gene['name']):
-            gene_name = re.sub('_\d', '', gene['name'])
-            if not gene_name in frag_gene_names:
-                frag_gene_names.append(re.sub('_\d', '', gene['name']))
 
-    frag_genes = []
-    for gene_name in frag_gene_names:
-        new_gene = copy.deepcopy(gene)
-        new_gene['name'] = gene_name
-        for gene in annotation['genes']:
-            if re.sub('_\d', '', gene['name']) == gene_name:
+    # removing tailing index of fragmented genes
+    for gene in [g for g in genes if g['type'] == 'gene']:
+        if re.match('_\d$', gene['name']):
+            gene_name = re.sub('_\d', '', gene['name'])
+            if gene_name not in frag_gene_names:
+                frag_gene_names.append(gene_name)
+
+    frag_genes = [] # fragmented genes
+
+    # forming one gene by combining the fragments
+    for frag_gene_name in frag_gene_names:
+        new_gene = copy.deepcopy(gene_dict)
+        new_gene['name'] = frag_gene_name
+        for gene in genes:
+            if frag_gene_name == re.sub('_\d', '', gene['name']):
                 new_gene['type'] = gene['type']
                 if new_gene['start'] == 0 or new_gene['start'] > gene['start']:
                     new_gene['start'] = gene['start']
@@ -219,14 +216,29 @@ def read_annotation(annotation):
                 new_gene['exons'] = new_gene['exons'] + gene['exons']
                 new_gene['introns'] = new_gene['introns'] + gene['introns']
         frag_genes.append(new_gene)
-    genes = copy.deepcopy(annotation['genes'])
-    for gene_name in frag_gene_names:
-        for gene in genes:
-            if re.sub('_\d', '', gene['name']) == gene_name:
-                annotation['genes'].remove(gene)
+    # removing the fragments and adding the combined genes
+    index = 0
+    while index < len(genes):
+        if re.sub('_\d', '', genes[index]['name']) in frag_gene_names:
+            genes.remove(genes[index])
+        index += 1
 
-    annotation['genes'] += frag_genes
+    genes += frag_genes
 
-    annotation['seq'] = re.sub('[\n !]', '', annotation['seq'])
+    return genes
 
-    ant_seq_valid()
+
+def find_junction(annotation_lines, index, position):
+    if index < len(annotation_lines)/2:
+        while annotation_lines[index].startswith(';'):
+            index += 1
+        seq_num, seq = annotation_lines[index].strip().split('  ')
+    else:
+        while annotation_lines[index].startswith(';'):
+            index -= 1
+        seq_num, seq = annotation_lines[index].strip().split('  ')
+        seq_num = int(seq_num) + len(seq)
+    if position == 'start':
+        return int(seq_num)
+    elif position == 'end':
+        return int(seq_num) - 1
