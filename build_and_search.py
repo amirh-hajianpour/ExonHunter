@@ -14,7 +14,7 @@ def msa_to_hmm(msa_file, hmm_file):
 # Make all six reading frames of a sequence
 # Return a list of the sequences of all six reading frames
 def get_reading_frames(sequence):
-    dna_seq = Seq(sequence)
+    dna_seq = sequence
     forward = [dna_seq] + [dna_seq[1:]] + [dna_seq[2:]]
     reverse = [dna_seq.reverse_complement()] + [dna_seq.reverse_complement()[1:]] + [dna_seq.reverse_complement()[2:]]
     return forward + reverse
@@ -118,8 +118,8 @@ def build_and_search(msa_file, fasta_file, organism_name, protein_name):
 
     # Making six translated reading frames and saving it as a FASTA sequence database
     fasta = next(SeqIO.parse(fasta_file, 'fasta'))
-    reading_frames = get_reading_frames(fasta.seq)
-    translated_reading_frames = [Seq(rf).translate() for rf in reading_frames]
+    reading_frames = get_reading_frames(fasta)
+    translated_reading_frames = [Seq(rf).translate(table=4) for rf in reading_frames]
     sequence_database = []
     for index, rf in enumerate(translated_reading_frames):
         if not index//3:

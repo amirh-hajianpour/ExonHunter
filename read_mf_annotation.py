@@ -109,13 +109,11 @@ def read_mf(annotation):
             splits = re.sub(' +', ' ', line.strip()).split(' ')
             # start of a gene
             if line.strip().startswith(';') and len(splits) >= 4:
-                #(splits[2] == '==>' or splits[2] == '<==') and
                 if splits[0] == ';' and re.match('G-.*', splits[1]) and \
                         not re.match('G-(orf|Var|Mot)', splits[1]) and \
                         not re.match('G-.*-(E|I)', splits[1]) and \
-                        splits[2] == '==>' and \
-                        splits[3].startswith('start'):
-                        #(splits[3].startswith('start') or splits[3].startswith('end')):
+                        ((splits[3].startswith('start') and splits[2] == '==>') or \
+                        (splits[3].startswith('end') and splits[2] == '<==')):
                     if region == 'intergenic':
                         region = 'gene'
                         gene = copy.deepcopy(gene_dict)
@@ -142,9 +140,8 @@ def read_mf(annotation):
                 elif splits[0] == ';' and re.match('G-.*', splits[1]) and \
                         not re.match('G-(orf|Var|Mot)', splits[1]) and \
                         not re.match('G-.*-(E|I)', splits[1]) and \
-                        splits[2] == '==>' and \
-                        splits[3].startswith('end'):
-                    #(splits[3].startswith('start') or splits[3].startswith('end')) and \
+                        ((splits[3].startswith('end') and splits[2] == '==>') or \
+                        (splits[3].startswith('start') and splits[2] == '<==')):
                     if gene['name'] and re.match('^G-' + re.escape(gene['name']) + '$', splits[1]) and region == 'gene':
                         gene['end'] = find_junction(annotation_lines, index, 'end')
                         if not gene['exons']:
@@ -164,22 +161,29 @@ def read_mf(annotation):
                 elif re.match(('^G-' + re.escape(gene['name']) + '-[Ee]\d*$'), splits[1]):
                     # start of an exon
                     if region != 'exon':
-                        start = find_junction(annotation_lines, index, 'start')
-                        region = 'exon'
+                        if (splits[3].startswith('start') and splits[2] == '==>') or \
+                                (splits[3].startswith('end') and splits[2] == '<=='):
+                            start = find_junction(annotation_lines, index, 'start')
+                            region = 'exon'
                     # end of an exon
                     elif region == 'exon':
-                        end = find_junction(annotation_lines, index, 'end')
-                        gene['exons'].append([start, end])
-                        start = end = 0
-                        region = 'gene'
+                        if (splits[3].startswith('end') and splits[2] == '==>') or \
+                                (splits[3].startswith('start') and splits[2] == '<=='):
+                            end = find_junction(annotation_lines, index, 'end')
+                            gene['exons'].append([start, end])
+                            start = end = 0
+                            region = 'gene'
                 elif re.match(('^G-' + re.escape(gene['name']) + '-[Ii]\d*$'), splits[1]):
                     # start of an intron
                     if region != 'intron':
-                        start = find_junction(annotation_lines, index, 'start')
-                        region = 'intron'
+                        if (splits[3].startswith('start') and splits[2] == '==>') or \
+                                (splits[3].startswith('end') and splits[2] == '<=='):
+                            start = find_junction(annotation_lines, index, 'start')
+                            region = 'intron'
                     # end of an intron
                     elif region == 'intron':
-                        if splits[3].startswith('end'):
+                        if (splits[3].startswith('end') and splits[2] == '==>') or \
+                                (splits[3].startswith('start') and splits[2] == '<=='):
                             end = find_junction(annotation_lines, index, 'end')
                             gene['introns'].append([start, end])
                             start = end = 0
@@ -195,7 +199,7 @@ def read_mf(annotation):
 
     # removing tailing index of fragmented genes
     for gene in [g for g in genes if g['type'] == 'gene']:
-        if re.match('_\d$', gene['name']):
+        if re.match('.*_\d$', gene['name']):
             gene_name = re.sub('_\d', '', gene['name'])
             if gene_name not in frag_gene_names:
                 frag_gene_names.append(gene_name)
@@ -207,20 +211,21 @@ def read_mf(annotation):
         new_gene = copy.deepcopy(gene_dict)
         new_gene['name'] = frag_gene_name
         for gene in genes:
-            if frag_gene_name == re.sub('_\d', '', gene['name']):
+            if gene['name'].startswith(frag_gene_name):
                 new_gene['type'] = gene['type']
-                if new_gene['start'] == 0 or new_gene['start'] > gene['start']:
-                    new_gene['start'] = gene['start']
-                if new_gene['end'] < gene['end']:
-                    new_gene['end'] = gene['end']
-                new_gene['exons'] = new_gene['exons'] + gene['exons']
-                new_gene['introns'] = new_gene['introns'] + gene['introns']
+                new_gene['start'] = min(gene['start'], new_gene['start'])
+                new_gene['end'] = max(gene['end'], new_gene['end'])
+                new_gene['exons'].extend(gene['exons'])
+                new_gene['introns'].extend(gene['introns'])
+                # break
         frag_genes.append(new_gene)
+
     # removing the fragments and adding the combined genes
     index = 0
     while index < len(genes):
         if re.sub('_\d', '', genes[index]['name']) in frag_gene_names:
             genes.remove(genes[index])
+            index = -1
         index += 1
 
     genes += frag_genes
